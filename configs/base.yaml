@@ -1,0 +1,5 @@
+# Base configuration
+paths:
+  data_dir: data
+  results_dir: results
+seed: 42

@@ -1,0 +1,6 @@
+# Configure MedMNIST subsets and splits
+datasets:
+  pathmnist:
+    train_split: 0.8
+    val_split: 0.1
+    test_split: 0.1

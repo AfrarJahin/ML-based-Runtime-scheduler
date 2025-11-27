@@ -1,0 +1,4 @@
+# Model hyperparameters placeholder
+simple_cnn:
+  num_classes: 9
+  learning_rate: 0.001
