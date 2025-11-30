@@ -38,34 +38,24 @@ def train_one_epoch(
     optimizer,
     epoch: int,
     device: torch.device,
-    workload_id: str,
-    dataset_name: str,
-    model_name: str,
-    run_id: str,
-    profile: bool,
-    num_workers: int,
-    precision: str,
     multilabel: bool,
+    profiler: BatchProfiler | None = None,
 ):
+    """
+    Train for a single epoch.
+
+    Note:
+        The profiler is created outside (in main) and reused across epochs.
+        We do NOT call profiler.save_csv() here, to avoid overwriting per-epoch.
+    """
     model.train()
     running_loss, correct, total = 0.0, 0, 0
     epoch_start = time.perf_counter()
 
-    profiler = BatchProfiler(
-        save_dir=Path("results/profiles"),
-        run_id=run_id,
-        workload_id=workload_id,
-        dataset=dataset_name,
-        model_name=model_name,
-        task_type="train",
-        enabled=profile,
-        num_workers=num_workers,
-        precision=precision,
-    )
-
     for batch_idx, (images, labels) in enumerate(loader):
         step_start = time.perf_counter()
 
+        # Data transfer
         t0 = time.perf_counter()
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
@@ -77,12 +67,14 @@ def train_one_epoch(
         t1 = time.perf_counter()
         data_time = t1 - t0
 
+        # Forward
         t2 = time.perf_counter()
         outputs = model(images)
         loss = criterion(outputs, labels)
         t3 = time.perf_counter()
         fwd_time = t3 - t2
 
+        # Backward + update
         t4 = time.perf_counter()
         optimizer.zero_grad()
         loss.backward()
@@ -92,6 +84,7 @@ def train_one_epoch(
 
         step_time = t5 - step_start
 
+        # Metrics
         running_loss += loss.item() * images.size(0)
         if multilabel:
             probs = torch.sigmoid(outputs)
@@ -103,22 +96,23 @@ def train_one_epoch(
             total += labels.size(0)
             correct += preds.eq(labels).sum().item()
 
-        profiler.log_batch(
-            epoch=epoch,
-            batch_idx=batch_idx,
-            batch_size=images.size(0),
-            images_shape=tuple(images.shape),
-            device=device,
-            data_time_s=data_time,
-            forward_time_s=fwd_time,
-            backward_time_s=bwd_time,
-            step_time_s=step_time,
-            split="train",
-            loss=loss.item(),
-            lr=optimizer.param_groups[0].get("lr"),
-        )
+        # Profiling (optional)
+        if profiler:
+            profiler.log_batch(
+                epoch=epoch,
+                batch_idx=batch_idx,
+                batch_size=images.size(0),
+                images_shape=tuple(images.shape),
+                device=device,
+                data_time_s=data_time,
+                forward_time_s=fwd_time,
+                backward_time_s=bwd_time,
+                step_time_s=step_time,
+                split="train",
+                loss=loss.item(),
+                lr=optimizer.param_groups[0].get("lr"),
+            )
 
-    profiler.save_csv()
     epoch_end = time.perf_counter()
     return running_loss / total, correct / total, epoch_end - epoch_start
 
@@ -219,7 +213,19 @@ def main():
 
     run_id = args.run_id or f"run_{spec.workload_id}_{spec.dataset}_{spec.model_name}_{device.type}"
 
-    # Profilers for eval (reuse per phase)
+    # Profilers for train / eval / test
+    train_profiler = BatchProfiler(
+        save_dir=Path("results/profiles"),
+        run_id=run_id,
+        workload_id=spec.workload_id,
+        dataset=spec.dataset,
+        model_name=spec.model_name,
+        task_type="train",
+        enabled=args.profile,
+        num_workers=num_workers,
+        precision=precision,
+    ) if args.profile else None
+
     val_profiler = BatchProfiler(
         save_dir=Path("results/profiles"),
         run_id=run_id,
@@ -244,25 +250,24 @@ def main():
         precision=precision,
     ) if args.profile else None
 
+    # Training loop
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc, t_train = train_one_epoch(
-            model,
-            train_loader,
-            criterion,
-            optimizer,
-            epoch,
-            device,
-            spec.workload_id,
-            spec.dataset,
-            spec.model_name,
-            run_id,
-            args.profile,
-            num_workers,
-            precision,
-            multilabel,
+            model=model,
+            loader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            epoch=epoch,
+            device=device,
+            multilabel=multilabel,
+            profiler=train_profiler,
         )
         print(f"Epoch {epoch}: train loss={train_loss:.4f}, acc={train_acc:.4f}, time={t_train:.2f}s")
         evaluate(model, val_loader, criterion, device, name="Val", profiler=val_profiler)
+
+    # Save the aggregated training profiling once (all epochs included)
+    if train_profiler:
+        train_profiler.save_csv()
 
     print("Final Test:")
     evaluate(model, test_loader, criterion, device, name="Test", profiler=test_profiler)
