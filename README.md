@@ -95,3 +95,11 @@ print("Avg forward ms:", df["forward_time_ms"].mean())
 - Train latency prediction models (MLP/GBT) for CPU/GPU step_time_ms.
 - Integrate a hybrid scheduler (device choice CPU vs GPU, later multi-GPU).
 - Compare against CPU-only, GPU-only, and heuristic baselines.
+
+## 9) Running on HPC (batch scripts)
+
+Submit a SLURM job:
+```bash
+sbatch scripts/run_profiling_gpu.sh
+```
+Edit the script before submitting: GPU partition, env name, project path, and workloads list as needed.
